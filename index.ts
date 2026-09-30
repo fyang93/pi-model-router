@@ -1,0 +1,97 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import type { ExtensionAPI, ExtensionContext, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+
+type Tier = "low" | "medium" | "high";
+type Target = { model: string; thinking: ModelThinkingLevel };
+type Config = { classifier: string } & Record<Tier, Target>;
+
+const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+function modelParts(ref: unknown): [string, string] {
+  if (typeof ref !== "string") throw new Error("Expected a physical provider/model");
+  const slash = ref.indexOf("/");
+  if (slash < 1 || slash === ref.length - 1 || ref === "router/auto") {
+    throw new Error(`Expected a physical provider/model, got ${JSON.stringify(ref)}`);
+  }
+  return [ref.slice(0, slash), ref.slice(slash + 1)];
+}
+
+export function loadConfig(path: string): Config {
+  const config = JSON.parse(readFileSync(path, "utf8"));
+  if (!config || typeof config !== "object") throw new Error("Router config must be an object");
+  modelParts(config.classifier);
+  for (const tier of ["low", "medium", "high"] as const) {
+    modelParts(config[tier]?.model);
+    if (!levels.includes(config[tier].thinking)) {
+      throw new Error(`Invalid ${tier}.thinking: ${config[tier].thinking}`);
+    }
+  }
+  return config;
+}
+
+export async function route(request: ModelRouteRequest, ctx: ExtensionContext, config: Config) {
+  const sticky = request.reason === "retry" ? request.failed ?? request.previous : request.previous;
+  if (request.reason === "retry" || request.reason === "continuation") {
+    if (sticky) return { model: sticky.model, thinkingLevel: sticky.thinkingLevel ?? "medium" as const };
+  }
+
+  let tier: Tier = "high"; // On classifier failure, prefer quality over a silent downgrade.
+  if (request.reason === "user") {
+    const user = request.messages.findLast((message) => message.role === "user");
+    const text = typeof user?.content === "string"
+      ? user.content
+      : user?.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") ?? "";
+    if (text.trim()) {
+      try {
+        const [provider, id] = modelParts(config.classifier);
+        const classifier = ctx.modelRegistry.findOfType("classifier", provider, id);
+        if (classifier) {
+          const result = await ctx.modelRegistry.classify(classifier, {
+            state: { request: text.slice(0, 12_000) },
+            questions: { complexity: {
+              type: "choice",
+              instructions: "How complex is this coding request? When unsure, choose high.",
+              criteria: {
+                low: "Lookup, summary, or trivial change",
+                medium: "Focused implementation or debugging",
+                high: "Architecture, broad refactor, risky or ambiguous work",
+              },
+            } },
+          }, { signal: request.signal });
+          const answer = result.answers.complexity;
+          if (result.stopReason === "stop" && answer?.type === "choice" &&
+            (answer.choice === "low" || answer.choice === "medium" || answer.choice === "high")) tier = answer.choice;
+        } else {
+          const model = ctx.modelRegistry.find(provider, id);
+          if (!model || model.api === "pi-virtual") throw new Error("Classifier model is not available");
+          const stream = ctx.modelRegistry.streamSimple(model, {
+            messages: [{ role: "user", content: `Classify the complexity of this coding request. Reply with exactly one word: low, medium, or high.\nlow: lookup, summary, trivial change.\nmedium: focused implementation or debugging.\nhigh: architecture, broad refactor, risky or ambiguous work.\nWhen unsure, choose high.\n\nRequest:\n${text.slice(0, 12_000)}`, timestamp: Date.now() }],
+          }, { maxTokens: 64, signal: request.signal });
+          const result = await stream.result();
+          const response = result.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim().toLowerCase();
+          if (result.stopReason === "stop" && (response === "low" || response === "medium" || response === "high")) tier = response;
+        }
+      } catch (error) {
+        if (request.signal?.aborted) throw error;
+      }
+    }
+  }
+
+  const target = config[tier];
+  const model = ctx.modelRegistry.find(...modelParts(target.model));
+  if (!model || model.api === "pi-virtual") throw new Error(`Routing target ${target.model} is not a physical model in Pi's catalog`);
+  return { model, thinkingLevel: target.thinking };
+}
+
+export default function (pi: ExtensionAPI) {
+  const config = loadConfig(join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "model-router.json"));
+  pi.registerVirtualModel({
+    provider: "router",
+    id: "auto",
+    name: "Auto Model",
+    route: (request, ctx) => route(request, ctx, config),
+  });
+}

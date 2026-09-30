@@ -1,0 +1,6 @@
+{
+  "classifier": "openai-codex/gpt-5.6-luna",
+  "low": { "model": "openai-codex/gpt-5.6-luna", "thinking": "low" },
+  "medium": { "model": "openai-codex/gpt-5.6-luna", "thinking": "medium" },
+  "high": { "model": "openai-codex/gpt-5.6-sol", "thinking": "high" }
+}
