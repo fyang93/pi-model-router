@@ -6,7 +6,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 type Tier = "low" | "medium" | "high";
 type Target = { model: string; thinking: ModelThinkingLevel };
-type Config = { classifier: string | string[] } & Record<Tier, Target>;
+type Config = { classifier: string | string[]; classifierTimeoutMs?: number } & Record<Tier, Target>;
 
 const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -34,6 +34,9 @@ export function loadConfig(path: string): Config {
   }
   return config;
 }
+
+/** A hanging classifier must not hold up the turn; past this the next one in the list is tried. */
+const DEFAULT_CLASSIFIER_TIMEOUT_MS = 10_000;
 
 const isTier = (value: unknown): value is Tier => value === "low" || value === "medium" || value === "high";
 
@@ -82,7 +85,9 @@ export async function route(request: ModelRouteRequest, ctx: ExtensionContext, c
     if (text.trim()) {
       for (const ref of [config.classifier].flat()) {
         try {
-          const answer = await classify(ref, text, ctx, request.signal);
+          const timeout = AbortSignal.timeout(config.classifierTimeoutMs ?? DEFAULT_CLASSIFIER_TIMEOUT_MS);
+          const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
+          const answer = await classify(ref, text, ctx, signal);
           if (answer) {
             tier = answer;
             break;

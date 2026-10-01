@@ -72,6 +72,23 @@ test("tries classifiers in order: an exhausted or failing one falls through to t
   assert.equal((await route(request("user") as any, { modelRegistry: outOfRange } as any, listed)).model.id, "small");
 });
 
+test("a hanging classifier times out and the next one answers", async () => {
+  const hangingCtx = { modelRegistry: {
+    findOfType: (_type: string, _provider: string, id: string) => (id === "jev" ? { type: "classifier", id } : undefined),
+    classify: (_model: unknown, _input: unknown, options: { signal: AbortSignal }) =>
+      new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason))),
+    find: (_provider: string, id: string) => models[id],
+    streamSimple: () => ({ result: async () => ({ stopReason: "stop", content: [{ type: "text", text: "low" }] }) }),
+  } };
+  const listed = { ...config, classifier: ["opencode/jev", "provider/small"], classifierTimeoutMs: 20 };
+  const keepAlive = setTimeout(() => {}, 1_000); // AbortSignal.timeout does not hold the event loop open
+  try {
+    assert.equal((await route(request("user") as any, hangingCtx as any, listed)).model.id, "small");
+  } finally {
+    clearTimeout(keepAlive);
+  }
+});
+
 test("rejects invalid config and self-routing", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-model-router-"));
   const path = join(dir, "config.json");
