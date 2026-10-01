@@ -6,7 +6,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 type Tier = "low" | "medium" | "high";
 type Target = { model: string; thinking: ModelThinkingLevel };
-type Config = { classifier: string } & Record<Tier, Target>;
+type Config = { classifier: string | string[] } & Record<Tier, Target>;
 
 const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -22,7 +22,10 @@ function modelParts(ref: unknown): [string, string] {
 export function loadConfig(path: string): Config {
   const config = JSON.parse(readFileSync(path, "utf8"));
   if (!config || typeof config !== "object") throw new Error("Router config must be an object");
-  modelParts(config.classifier);
+  // One classifier or a fallback list, tried in order (e.g. a quota-limited classifier, then a chat model).
+  const classifiers = [config.classifier].flat();
+  if (!classifiers.length) throw new Error("classifier needs at least one provider/model");
+  classifiers.forEach(modelParts);
   for (const tier of ["low", "medium", "high"] as const) {
     modelParts(config[tier]?.model);
     if (!levels.includes(config[tier].thinking)) {
@@ -30,6 +33,38 @@ export function loadConfig(path: string): Config {
     }
   }
   return config;
+}
+
+const isTier = (value: unknown): value is Tier => value === "low" || value === "medium" || value === "high";
+
+/** One classifier's answer, or undefined when it is unavailable, out of quota or answers out of range. */
+async function classify(ref: string, text: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<Tier | undefined> {
+  const [provider, id] = modelParts(ref);
+  const classifier = ctx.modelRegistry.findOfType("classifier", provider, id);
+  if (classifier) {
+    const result = await ctx.modelRegistry.classify(classifier, {
+      state: { request: text.slice(0, 12_000) },
+      questions: { complexity: {
+        type: "choice",
+        instructions: "How complex is this coding request? When unsure, choose high.",
+        criteria: {
+          low: "Lookup, summary, or trivial change",
+          medium: "Focused implementation or debugging",
+          high: "Architecture, broad refactor, risky or ambiguous work",
+        },
+      } },
+    }, { signal });
+    const answer = result.answers.complexity;
+    return result.stopReason === "stop" && answer?.type === "choice" && isTier(answer.choice) ? answer.choice : undefined;
+  }
+  const model = ctx.modelRegistry.find(provider, id);
+  if (!model || model.api === "pi-virtual") return undefined;
+  const stream = ctx.modelRegistry.streamSimple(model, {
+    messages: [{ role: "user", content: `Classify the complexity of this coding request. Reply with exactly one word: low, medium, or high.\nlow: lookup, summary, trivial change.\nmedium: focused implementation or debugging.\nhigh: architecture, broad refactor, risky or ambiguous work.\nWhen unsure, choose high.\n\nRequest:\n${text.slice(0, 12_000)}`, timestamp: Date.now() }],
+  }, { maxTokens: 64, signal });
+  const result = await stream.result();
+  const response = result.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim().toLowerCase();
+  return result.stopReason === "stop" && isTier(response) ? response : undefined;
 }
 
 export async function route(request: ModelRouteRequest, ctx: ExtensionContext, config: Config) {
@@ -45,37 +80,16 @@ export async function route(request: ModelRouteRequest, ctx: ExtensionContext, c
       ? user.content
       : user?.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") ?? "";
     if (text.trim()) {
-      try {
-        const [provider, id] = modelParts(config.classifier);
-        const classifier = ctx.modelRegistry.findOfType("classifier", provider, id);
-        if (classifier) {
-          const result = await ctx.modelRegistry.classify(classifier, {
-            state: { request: text.slice(0, 12_000) },
-            questions: { complexity: {
-              type: "choice",
-              instructions: "How complex is this coding request? When unsure, choose high.",
-              criteria: {
-                low: "Lookup, summary, or trivial change",
-                medium: "Focused implementation or debugging",
-                high: "Architecture, broad refactor, risky or ambiguous work",
-              },
-            } },
-          }, { signal: request.signal });
-          const answer = result.answers.complexity;
-          if (result.stopReason === "stop" && answer?.type === "choice" &&
-            (answer.choice === "low" || answer.choice === "medium" || answer.choice === "high")) tier = answer.choice;
-        } else {
-          const model = ctx.modelRegistry.find(provider, id);
-          if (!model || model.api === "pi-virtual") throw new Error("Classifier model is not available");
-          const stream = ctx.modelRegistry.streamSimple(model, {
-            messages: [{ role: "user", content: `Classify the complexity of this coding request. Reply with exactly one word: low, medium, or high.\nlow: lookup, summary, trivial change.\nmedium: focused implementation or debugging.\nhigh: architecture, broad refactor, risky or ambiguous work.\nWhen unsure, choose high.\n\nRequest:\n${text.slice(0, 12_000)}`, timestamp: Date.now() }],
-          }, { maxTokens: 64, signal: request.signal });
-          const result = await stream.result();
-          const response = result.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim().toLowerCase();
-          if (result.stopReason === "stop" && (response === "low" || response === "medium" || response === "high")) tier = response;
+      for (const ref of [config.classifier].flat()) {
+        try {
+          const answer = await classify(ref, text, ctx, request.signal);
+          if (answer) {
+            tier = answer;
+            break;
+          }
+        } catch (error) {
+          if (request.signal?.aborted) throw error;
         }
-      } catch (error) {
-        if (request.signal?.aborted) throw error;
       }
     }
   }

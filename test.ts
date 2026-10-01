@@ -57,12 +57,31 @@ test("classifier errors and malformed output fail closed to high", async () => {
   assert.equal((await route(request("user") as any, broken as any, config)).model.id, "big");
 });
 
+test("tries classifiers in order: an exhausted or failing one falls through to the next", async () => {
+  const tried: string[] = [];
+  const fallbackCtx = { modelRegistry: {
+    findOfType: (_type: string, _provider: string, id: string) => (id === "jev" ? { type: "classifier", id } : undefined),
+    classify: async () => { tried.push("jev"); throw Error("429 quota exceeded"); },
+    find: (_provider: string, id: string) => models[id],
+    streamSimple: () => { tried.push("small"); return { result: async () => ({ stopReason: "stop", content: [{ type: "text", text: "low" }] }) }; },
+  } };
+  const listed = { ...config, classifier: ["opencode/jev", "provider/small"] };
+  assert.equal((await route(request("user") as any, fallbackCtx as any, listed)).model.id, "small");
+  assert.deepEqual(tried, ["jev", "small"]);
+  const outOfRange = { ...fallbackCtx.modelRegistry, classify: async () => ({ stopReason: "error", answers: {} }) };
+  assert.equal((await route(request("user") as any, { modelRegistry: outOfRange } as any, listed)).model.id, "small");
+});
+
 test("rejects invalid config and self-routing", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-model-router-"));
   const path = join(dir, "config.json");
   try {
     writeFileSync(path, JSON.stringify(config));
     assert.deepEqual(loadConfig(path), config);
+    writeFileSync(path, JSON.stringify({ ...config, classifier: ["opencode/jev-1.13-free", "provider/small"] }));
+    assert.deepEqual(loadConfig(path).classifier, ["opencode/jev-1.13-free", "provider/small"]);
+    writeFileSync(path, JSON.stringify({ ...config, classifier: [] }));
+    assert.throws(() => loadConfig(path), /at least one/);
     writeFileSync(path, JSON.stringify({ ...config, low: { model: "router/auto", thinking: "low" } }));
     assert.throws(() => loadConfig(path), /physical provider\/model/);
   } finally {
