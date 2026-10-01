@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, route } from "./index.ts";
+import registerRouter, { loadConfig, route } from "./index.ts";
 
 const config = {
   classifier: "provider/small",
@@ -86,6 +86,36 @@ test("a hanging classifier times out and the next one answers", async () => {
     assert.equal((await route(request("user") as any, hangingCtx as any, listed)).model.id, "small");
   } finally {
     clearTimeout(keepAlive);
+  }
+});
+
+test("reloads changed config on new turns and caches unchanged config", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-model-router-"));
+  const path = join(dir, "model-router.json");
+  const agentDir = process.env.PI_CODING_AGENT_DIR;
+  try {
+    process.env.PI_CODING_AGENT_DIR = dir;
+    writeFileSync(path, JSON.stringify(config));
+    utimesSync(path, 1, 1);
+    let registered: any;
+    registerRouter({ registerVirtualModel: (model: unknown) => { registered = model; } } as any);
+    const run = (req = request("user")) => registered.route(req, ctx("low"));
+    assert.equal((await run()).model.id, "small");
+    writeFileSync(path, JSON.stringify({ ...config, low: { model: "provider/mid", thinking: "low" } }));
+    utimesSync(path, 2, 2);
+    assert.equal((await run()).model.id, "mid");
+    writeFileSync(path, "invalid JSON");
+    utimesSync(path, 2, 2);
+    assert.equal((await run()).model.id, "mid"); // Unchanged mtime: no read or parse.
+    utimesSync(path, 3, 3);
+    const sticky = { model: models.mid, thinkingLevel: "low" };
+    assert.equal((await run(request("continuation", sticky))).model.id, "mid");
+    assert.equal((await run(request("retry", sticky))).model.id, "mid");
+    assert.throws(() => run(), SyntaxError);
+  } finally {
+    if (agentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = agentDir;
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

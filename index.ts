@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ExtensionAPI, ExtensionContext, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
@@ -106,11 +106,22 @@ export async function route(request: ModelRouteRequest, ctx: ExtensionContext, c
 }
 
 export default function (pi: ExtensionAPI) {
-  const config = loadConfig(join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "model-router.json"));
+  const configPath = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "model-router.json");
+  let config = loadConfig(configPath);
+  let configMtime = statSync(configPath).mtimeMs;
   pi.registerVirtualModel({
     provider: "router",
     id: "auto",
     name: "Auto Model",
-    route: (request, ctx) => route(request, ctx, config),
+    route: (request, ctx) => {
+      if (request.reason === "user") {
+        const mtime = statSync(configPath).mtimeMs;
+        if (mtime !== configMtime) {
+          config = loadConfig(configPath);
+          configMtime = mtime;
+        }
+      }
+      return route(request, ctx, config);
+    },
   });
 }
