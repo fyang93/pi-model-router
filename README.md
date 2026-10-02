@@ -13,9 +13,11 @@ Let [pi](https://pi.dev) pick the model for you. Select `router/auto`, and each 
 pi install git:github.com/fyang93/pi-model-router
 ```
 
-Then copy `config.json.example` to `~/.pi/agent/model-router.json`, put in the models you want, restart pi and choose `router/auto` (`pi --model router/auto`).
+Restart pi and choose `router/auto` (`pi --model router/auto`). It works out of the box with the models below; to use others, write your own `~/.pi/agent/model-router.json`.
 
 ## Config
+
+The defaults, which a `~/.pi/agent/model-router.json` of the same shape replaces:
 
 ```json
 {

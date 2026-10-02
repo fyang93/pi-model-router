@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import registerRouter, { loadConfig, route } from "./index.ts";
+import registerRouter, { DEFAULT_CONFIG, loadConfig, route } from "./index.ts";
 
 const config = {
   classifier: "provider/small",
@@ -132,6 +132,22 @@ test("rejects invalid config and self-routing", () => {
     writeFileSync(path, JSON.stringify({ ...config, low: { model: "router/auto", thinking: "low" } }));
     assert.throws(() => loadConfig(path), /physical provider\/model/);
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("works without a config file and picks one up once it is written", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-model-router-"));
+  const agentDir = process.env.PI_CODING_AGENT_DIR;
+  try {
+    process.env.PI_CODING_AGENT_DIR = dir;
+    let registered: any;
+    registerRouter({ registerVirtualModel: (model: unknown) => { registered = model; } } as any);
+    assert.deepEqual(loadConfig(join(dir, "model-router.json")), DEFAULT_CONFIG);
+    writeFileSync(join(dir, "model-router.json"), JSON.stringify(config));
+    assert.equal((await registered.route(request("user"), ctx("low"))).model.id, "small");
+  } finally {
+    if (agentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = agentDir;
     rmSync(dir, { recursive: true, force: true });
   }
 });

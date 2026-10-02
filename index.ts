@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ExtensionAPI, ExtensionContext, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
@@ -19,8 +19,18 @@ function modelParts(ref: unknown): [string, string] {
   return [ref.slice(0, slash), ref.slice(slash + 1)];
 }
 
+/** Used until the user writes model-router.json; the file replaces it whole. */
+export const DEFAULT_CONFIG: Config = {
+  classifier: ["opencode/jev-1.13-free", "openai-codex/gpt-5.6-luna"],
+  low: { model: "openai-codex/gpt-5.6-luna", thinking: "low" },
+  medium: { model: "openai-codex/gpt-5.6-luna", thinking: "medium" },
+  high: { model: "openai-codex/gpt-5.6-sol", thinking: "high" },
+};
+
+const mtimeOf = (path: string) => existsSync(path) ? statSync(path).mtimeMs : 0;
+
 export function loadConfig(path: string): Config {
-  const config = JSON.parse(readFileSync(path, "utf8"));
+  const config = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : DEFAULT_CONFIG;
   if (!config || typeof config !== "object") throw new Error("Router config must be an object");
   // One classifier or a fallback list, tried in order (e.g. a quota-limited classifier, then a chat model).
   const classifiers = [config.classifier].flat();
@@ -108,14 +118,14 @@ export async function route(request: ModelRouteRequest, ctx: ExtensionContext, c
 export default function (pi: ExtensionAPI) {
   const configPath = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "model-router.json");
   let config = loadConfig(configPath);
-  let configMtime = statSync(configPath).mtimeMs;
+  let configMtime = mtimeOf(configPath);
   pi.registerVirtualModel({
     provider: "router",
     id: "auto",
     name: "Auto Model",
     route: (request, ctx) => {
       if (request.reason === "user") {
-        const mtime = statSync(configPath).mtimeMs;
+        const mtime = mtimeOf(configPath);
         if (mtime !== configMtime) {
           config = loadConfig(configPath);
           configMtime = mtime;
