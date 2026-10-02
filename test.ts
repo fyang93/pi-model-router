@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import registerRouter, { DEFAULT_CONFIG, loadConfig, route } from "./index.ts";
+import registerRouter, { TEMPLATE, loadConfig, route } from "./index.ts";
 
 const config = {
   classifier: "provider/small",
@@ -127,8 +127,6 @@ test("rejects invalid config and self-routing", () => {
     assert.deepEqual(loadConfig(path), config);
     writeFileSync(path, JSON.stringify({ ...config, classifier: ["opencode/jev-1.13-free", "provider/small"] }));
     assert.deepEqual(loadConfig(path).classifier, ["opencode/jev-1.13-free", "provider/small"]);
-    writeFileSync(path, JSON.stringify({ ...config, classifier: [] }));
-    assert.throws(() => loadConfig(path), /at least one/);
     writeFileSync(path, JSON.stringify({ ...config, low: { model: "router/auto", thinking: "low" } }));
     assert.throws(() => loadConfig(path), /physical provider\/model/);
   } finally {
@@ -136,16 +134,19 @@ test("rejects invalid config and self-routing", () => {
   }
 });
 
-test("works without a config file and picks one up once it is written", async () => {
+test("first start writes a template to fill in; unchosen models fail clearly; filling it in takes effect", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-model-router-"));
+  const path = join(dir, "model-router.json");
   const agentDir = process.env.PI_CODING_AGENT_DIR;
   try {
     process.env.PI_CODING_AGENT_DIR = dir;
     let registered: any;
     registerRouter({ registerVirtualModel: (model: unknown) => { registered = model; } } as any);
-    assert.deepEqual(loadConfig(join(dir, "model-router.json")), DEFAULT_CONFIG);
-    writeFileSync(join(dir, "model-router.json"), JSON.stringify(config));
-    assert.equal((await registered.route(request("user"), ctx("low"))).model.id, "small");
+    assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), TEMPLATE);
+    await assert.rejects(registered.route(request("user"), ctx("low")), /choose a model for "high" in model-router.json/);
+    writeFileSync(path, JSON.stringify({ ...TEMPLATE, high: { model: "provider/big", thinking: "high" } }));
+    utimesSync(path, 5, 5);
+    assert.equal((await registered.route(request("user"), ctx("low"))).model.id, "big"); // no classifier: everything to high
   } finally {
     if (agentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = agentDir;
     rmSync(dir, { recursive: true, force: true });

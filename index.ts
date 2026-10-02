@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { ExtensionAPI, ExtensionContext, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -19,25 +19,27 @@ function modelParts(ref: unknown): [string, string] {
   return [ref.slice(0, slash), ref.slice(slash + 1)];
 }
 
-/** Used until the user writes model-router.json; the file replaces it whole. */
-export const DEFAULT_CONFIG: Config = {
-  classifier: ["opencode/jev-1.13-free", "openai-codex/gpt-5.6-luna"],
-  low: { model: "openai-codex/gpt-5.6-luna", thinking: "low" },
-  medium: { model: "openai-codex/gpt-5.6-luna", thinking: "medium" },
-  high: { model: "openai-codex/gpt-5.6-sol", thinking: "high" },
+/** Written on first start for the user to fill in; an empty model is not chosen yet. */
+export const TEMPLATE: Config = {
+  classifier: [],
+  low: { model: "", thinking: "low" },
+  medium: { model: "", thinking: "medium" },
+  high: { model: "", thinking: "high" },
 };
 
 const mtimeOf = (path: string) => existsSync(path) ? statSync(path).mtimeMs : 0;
 
 export function loadConfig(path: string): Config {
-  const config = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : DEFAULT_CONFIG;
+  if (!existsSync(path)) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(TEMPLATE, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+  }
+  const config = JSON.parse(readFileSync(path, "utf8"));
   if (!config || typeof config !== "object") throw new Error("Router config must be an object");
   // One classifier or a fallback list, tried in order (e.g. a quota-limited classifier, then a chat model).
-  const classifiers = [config.classifier].flat();
-  if (!classifiers.length) throw new Error("classifier needs at least one provider/model");
-  classifiers.forEach(modelParts);
+  [config.classifier].flat().forEach(modelParts); // none: every request goes to high
   for (const tier of ["low", "medium", "high"] as const) {
-    modelParts(config[tier]?.model);
+    if (config[tier]?.model !== "") modelParts(config[tier]?.model);
     if (!levels.includes(config[tier].thinking)) {
       throw new Error(`Invalid ${tier}.thinking: ${config[tier].thinking}`);
     }
@@ -110,6 +112,7 @@ export async function route(request: ModelRouteRequest, ctx: ExtensionContext, c
   }
 
   const target = config[tier];
+  if (!target.model) throw new Error(`router/auto: choose a model for "${tier}" in model-router.json`);
   const model = ctx.modelRegistry.find(...modelParts(target.model));
   if (!model || model.api === "pi-virtual") throw new Error(`Routing target ${target.model} is not a physical model in Pi's catalog`);
   return { model, thinkingLevel: target.thinking };

@@ -13,11 +13,11 @@ Let [pi](https://pi.dev) pick the model for you. Select `router/auto`, and each 
 pi install git:github.com/fyang93/pi-model-router
 ```
 
-Restart pi and choose `router/auto` (`pi --model router/auto`). It works out of the box with the models below; to use others, write your own `~/.pi/agent/model-router.json`.
+Restart pi. On first start it writes `~/.pi/agent/model-router.json` with the models left empty: fill in the ones you want, then choose `router/auto` (`pi --model router/auto`).
 
 ## Config
 
-The defaults, which a `~/.pi/agent/model-router.json` of the same shape replaces:
+For example:
 
 ```json
 {
@@ -28,8 +28,8 @@ The defaults, which a `~/.pi/agent/model-router.json` of the same shape replaces
 }
 ```
 
-- `low`, `medium`, `high`: any chat model from `pi --list-models`, with its thinking level.
-- `classifier`: the model that sorts each message, or a list tried in order. It can be a chat model or one of [pi's classifier models](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md#use-classifier-models). Optional `classifierTimeoutMs` (default 10000) sets how long each one gets.
+- `low`, `medium`, `high`: any chat model from `pi --list-models`, with its thinking level. Only `high` is required; a tier left empty reports that it needs a model when it is picked.
+- `classifier`: the model that sorts each message, or a list tried in order; with none, every message goes to `high`. It can be a chat model or one of [pi's classifier models](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md#use-classifier-models). Optional `classifierTimeoutMs` (default 10000) sets how long each one gets.
 
 Sorting costs one small extra call per message you send. The config lives in your pi directory and is never part of the package.
 
