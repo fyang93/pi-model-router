@@ -15,6 +15,12 @@ pi install git:github.com/fyang93/pi-model-router
 
 Restart pi. On first start it writes `~/.pi/agent/model-router.json` with the models left empty: fill in the ones you want, then choose `router/auto` (`pi --model router/auto`).
 
+Or let pi do all of it. Paste this into pi:
+
+```text
+Set up pi-model-router for me. Install it with `pi install git:github.com/fyang93/pi-model-router` and read its README at https://github.com/fyang93/pi-model-router. Run `pi --list-models` to see the models I can use, then create or fill in ~/.pi/agent/model-router.json: a fast, cheap model for low, a balanced one for medium, my strongest for high, and a cheap model as the classifier. Show me the config and wait for my OK before saving it, then tell me to restart pi and select router/auto.
+```
+
 ## Config
 
 For example:
